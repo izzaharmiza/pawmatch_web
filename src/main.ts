@@ -37,19 +37,45 @@ let totalCount = 0;
 let finished = false;
 
 /* -------------------- data -------------------- */
-async function fetchCat(): Promise<CatJson> {
-  const res = await fetch(`${API}/cat?json=true`, {
-    headers: { accept: 'application/json' },
-    cache: 'no-cache',
-  });
-  if (!res.ok) throw new Error('CATAAS request failed');
-  const data = await res.json();
-  return { id: data.id, url: `${API}/cat/${data.id}`, tags: data.tags ?? [] };
+async function fetchCat(timeoutMs = 5000): Promise<CatJson> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const res = await fetch(`${API}/cat?json=true`, {
+      headers: { accept: 'application/json' },
+      cache: 'no-cache',
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    
+    if (!res.ok) throw new Error('CATAAS request failed');
+    const data = await res.json();
+    return { id: data.id, url: `${API}/cat/${data.id}`, tags: data.tags ?? [] };
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('Request timed out');
+    }
+    throw error;
+  }
 }
 
 async function loadCats(n = DEFAULT_TOTAL) {
   // show loading
-  document.getElementById('loading-screen')!.style.display = 'flex';
+  const loadingScreen = document.getElementById('loading-screen')!;
+  loadingScreen.style.display = 'flex';
+  
+  // Add loading text
+  let loadingText = loadingScreen.querySelector('.loading-text') as HTMLElement;
+  if (!loadingText) {
+    loadingText = document.createElement('div');
+    loadingText.className = 'loading-text';
+    loadingText.style.marginTop = '1rem';
+    loadingText.style.fontSize = '1.2rem';
+    loadingText.style.color = '#666';
+    loadingScreen.appendChild(loadingText);
+  }
   
   finished = false;
   SUMMARY.hidden = true;
@@ -60,25 +86,46 @@ async function loadCats(n = DEFAULT_TOTAL) {
   updateProgress(0);
 
   for (let i = 0; i < n; i++) {
+    loadingText.textContent = `Loading cats... ${i + 1}/${n}`;
+    
     try {
       cats.push(await fetchCat());
       await sleep(120);
-    } catch {
+    } catch (error) {
+      console.warn(`Failed to fetch cat ${i + 1}:`, error);
+      // Fallback cat with random ID
       cats.push({ id: `${Date.now()}_${i}`, url: `${API}/cat`, tags: [] });
     }
   }
 
+  loadingText.textContent = 'Preparing your cats...';
   totalCount = cats.length;
   processed = 0;
 
-  // preload images
+  // preload images with timeout
   await Promise.all(
     cats.map(
       c =>
         new Promise<void>(resolve => {
           const img = new Image();
           img.src = `${c.url}?width=900&height=1200`;
-          img.onload = img.onerror = () => resolve();
+          
+          // Set a timeout for image loading
+          const timeout = setTimeout(() => {
+            console.warn(`Image timeout for ${c.url}`);
+            resolve();
+          }, 3000);
+          
+          img.onload = () => {
+            clearTimeout(timeout);
+            resolve();
+          };
+          
+          img.onerror = () => {
+            clearTimeout(timeout);
+            console.warn(`Failed to load image for ${c.url}`);
+            resolve();
+          };
         }),
     ),
   );
